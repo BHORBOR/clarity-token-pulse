@@ -7,26 +7,48 @@
         total-transfers: uint,
         unique-holders: uint,
         total-volume: uint,
-        largest-transfer: uint
+        largest-transfer: uint,
+        average-transfer: uint,
+        price-data: {
+            current-price: uint,
+            all-time-high: uint,
+            all-time-low: uint
+        }
     }
 )
 
 (define-map holder-balances
     { token-id: principal, holder: principal }
-    { balance: uint }
+    { 
+        balance: uint,
+        last-transfer: uint,
+        transfer-count: uint
+    }
 )
 
 (define-map historical-data
     { token-id: principal, timestamp: uint }
     {
         daily-volume: uint,
-        active-holders: uint
+        active-holders: uint,
+        price: uint,
+        volatility: uint
     }
 )
 
-;; Error Constants
+(define-map token-metrics
+    { token-id: principal }
+    {
+        velocity: uint,
+        concentration-index: uint,
+        turnover-ratio: uint
+    }
+)
+
+;; Error Constants  
 (define-constant ERR-INVALID-TOKEN (err u100))
 (define-constant ERR-UNAUTHORIZED (err u101))
+(define-constant ERR-INVALID-PRICE (err u102))
 
 ;; Public Functions
 
@@ -39,6 +61,29 @@
         (try! (update-token-stats token-id amount))
         (try! (update-holder-balances token-id from to amount))
         (try! (record-historical-data token-id amount))
+        (try! (calculate-metrics token-id))
+        (ok true)
+    )
+)
+
+(define-public (update-price-data
+    (token-id principal)
+    (price uint))
+    (let ((current-stats (unwrap-panic (get-token-stats token-id))))
+        (map-set token-stats
+            {token-id: token-id}
+            (merge current-stats {
+                price-data: {
+                    current-price: price,
+                    all-time-high: (if (> price (get all-time-high (get price-data current-stats)))
+                        price
+                        (get all-time-high (get price-data current-stats))),
+                    all-time-low: (if (< price (get all-time-low (get price-data current-stats)))
+                        price
+                        (get all-time-low (get price-data current-stats)))
+                }
+            })
+        )
         (ok true)
     )
 )
@@ -56,7 +101,10 @@
                     total-volume: (+ (get total-volume stats-data) amount),
                     largest-transfer: (if (> amount (get largest-transfer stats-data))
                         amount
-                        (get largest-transfer stats-data))
+                        (get largest-transfer stats-data)),
+                    average-transfer: (/ (+ (get total-volume stats-data) amount)
+                                       (+ (get total-transfers stats-data) u1)),
+                    price-data: (get price-data stats-data)
                 }
             )
             (ok true)
@@ -68,7 +116,13 @@
                     total-transfers: u1,
                     unique-holders: u1,
                     total-volume: amount,
-                    largest-transfer: amount
+                    largest-transfer: amount,
+                    average-transfer: amount,
+                    price-data: {
+                        current-price: u0,
+                        all-time-high: u0,
+                        all-time-low: u0
+                    }
                 }
             )
             (ok true)
@@ -76,56 +130,24 @@
     )
 )
 
-(define-private (update-holder-balances
-    (token-id principal)
-    (from principal)
-    (to principal)
-    (amount uint))
-    (begin
-        (match (map-get? holder-balances {token-id: token-id, holder: from})
-            from-data (map-set holder-balances
-                {token-id: token-id, holder: from}
-                {balance: (- (get balance from-data) amount)}
-            )
-            (map-set holder-balances
-                {token-id: token-id, holder: from}
-                {balance: u0}
-            )
-        )
-        (match (map-get? holder-balances {token-id: token-id, holder: to})
-            to-data (map-set holder-balances
-                {token-id: token-id, holder: to}
-                {balance: (+ (get balance to-data) amount)}
-            )
-            (map-set holder-balances
-                {token-id: token-id, holder: to}
-                {balance: amount}
-            )
+(define-private (calculate-metrics (token-id principal))
+    (let ((stats (unwrap-panic (get-token-stats token-id))))
+        (map-set token-metrics
+            {token-id: token-id}
+            {
+                velocity: (/ (get total-volume stats) (get unique-holders stats)),
+                concentration-index: (calculate-concentration token-id),
+                turnover-ratio: (/ (get total-volume stats) 
+                                 (get current-price (get price-data stats)))
+            }
         )
         (ok true)
     )
 )
 
-(define-private (record-historical-data (token-id principal) (amount uint))
-    (let ((current-time block-height))
-        (match (map-get? historical-data {token-id: token-id, timestamp: current-time})
-            existing-data (map-set historical-data
-                {token-id: token-id, timestamp: current-time}
-                {
-                    daily-volume: (+ (get daily-volume existing-data) amount),
-                    active-holders: (get active-holders existing-data)
-                }
-            )
-            (map-set historical-data
-                {token-id: token-id, timestamp: current-time}
-                {
-                    daily-volume: amount,
-                    active-holders: u1
-                }
-            )
-        )
-        (ok true)
-    )
+(define-private (calculate-concentration (token-id principal))
+    ;; Placeholder for Gini coefficient calculation
+    u0
 )
 
 ;; Read-Only Functions
@@ -140,4 +162,8 @@
 
 (define-read-only (get-historical-data (token-id principal) (timestamp uint))
     (ok (map-get? historical-data {token-id: token-id, timestamp: timestamp}))
+)
+
+(define-read-only (get-token-metrics (token-id principal))
+    (ok (map-get? token-metrics {token-id: token-id}))
 )
