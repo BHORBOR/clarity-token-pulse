@@ -3,6 +3,8 @@
 ;; Constants
 (define-constant CONTRACT_OWNER tx-sender)
 (define-constant PRECISION u1000000) ;; 6 decimal places for calculations
+(define-constant MIN_TIME_DIFF u1)
+(define-constant MAX_PRICE u340282366920938463463374607431768211455)
 
 ;; Data Variables
 (define-data-var initialized bool false)
@@ -25,13 +27,13 @@
     }
 )
 
-;; [Previous maps remain unchanged]
-
 ;; Error Constants
 (define-constant ERR-NOT-INITIALIZED (err u103))
 (define-constant ERR-ALREADY-INITIALIZED (err u104))
 (define-constant ERR-NOT-OWNER (err u105))
 (define-constant ERR-OVERFLOW (err u106))
+(define-constant ERR-INVALID-PRICE (err u107))
+(define-constant ERR-INVALID-TIME (err u108))
 
 ;; Authorization
 (define-private (is-contract-owner)
@@ -56,7 +58,7 @@
     (amount uint))
     (begin
         (asserts! (var-get initialized) ERR-NOT-INITIALIZED)
-        (asserts! (< (+ amount u0) u340282366920938463463374607431768211455) ERR-OVERFLOW)
+        (asserts! (< (+ amount u0) MAX_PRICE) ERR-OVERFLOW)
         (try! (update-token-stats token-id amount))
         (try! (update-holder-balances token-id from to amount))
         (try! (record-historical-data token-id amount))
@@ -70,7 +72,7 @@
     (price uint))
     (begin
         (asserts! (var-get initialized) ERR-NOT-INITIALIZED)
-        (asserts! (> price u0) ERR-INVALID-PRICE)
+        (asserts! (and (> price u0) (< price MAX_PRICE)) ERR-INVALID-PRICE)
         (let (
             (current-stats (unwrap-panic (get-token-stats token-id)))
             (current-time block-height)
@@ -79,6 +81,7 @@
                 (get time-weighted-average (get price-data current-stats))
                 price 
                 time-diff)))
+            (asserts! (>= time-diff MIN_TIME_DIFF) ERR-INVALID-TIME)
             (map-set token-stats
                 {token-id: token-id}
                 (merge current-stats {
@@ -101,24 +104,33 @@
 )
 
 ;; Private Functions
-
 (define-private (calculate-twap (old-twap uint) (new-price uint) (time-diff uint))
     (if (is-eq time-diff u0)
         old-twap
-        (/ (+ (* old-twap (- PRECISION u1)) (* new-price u1)) PRECISION)
+        (let ((weighted-old (/ (* old-twap (- PRECISION u1)) PRECISION))
+             (weighted-new (/ (* new-price time-diff) PRECISION)))
+            (+ weighted-old weighted-new)
+        )
     )
 )
 
 (define-private (calculate-concentration (token-id principal))
     (let ((holders-data (get-all-holders token-id)))
-        ;; Proper Gini coefficient calculation
-        ;; Sum of absolute differences divided by (2 * mean * n^2)
-        ;; Placeholder returns u0 until full implementation
-        u0
+        (fold process-gini-calculation 
+            holders-data
+            { sum: u0, count: u0, total: u0 })
     )
 )
 
-;; [Previous functions remain unchanged]
-
-;; Read-Only Functions
-;; [Previous read-only functions remain unchanged]
+(define-private (process-gini-calculation (holder { address: principal, balance: uint }) (acc { sum: uint, count: uint, total: uint }))
+    (let ((new-sum (+ (get sum acc) (get balance holder)))
+         (new-count (+ (get count acc) u1)))
+        { 
+            sum: new-sum,
+            count: new-count,
+            total: (if (is-eq new-count u1) 
+                    (get balance holder)
+                    (get total acc))
+        }
+    )
+)
